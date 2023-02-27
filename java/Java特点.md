@@ -67,6 +67,10 @@
 
 - ![image-20230212131504929](https://cdn.jsdelivr.net/gh/lzclzclzc12/BlogImage@main/img/image-20230212131504929.png)
 
+### 8.3 double和Double
+
+- double是基本数据类型，而Double是类![image-20230227104622729](https://cdn.jsdelivr.net/gh/lzclzclzc12/BlogImage@main/img/202302271046760.png)
+
 ## 9. 运算符 
 
 ### 9.1 算术运算符
