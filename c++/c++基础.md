@@ -421,7 +421,7 @@ public:
 
     Distance operator - () const ;
     Distance& operator -= (const Distance &);
-    friend ostream& operator << (ostream& os , const Distance& d);
+    friend ostream& operator << (ostream& os , const Distance& d); // 该函数不属于Distance类
     Distance operator + (const Distance& ) const ;
     Distance operator - (const Distance& ) const ;
     Distance& operator ++() ;
@@ -466,7 +466,7 @@ Distance Distance::operator ++ (int) {
     return d;
 }
 
-ostream& operator << (ostream& os , const Distance& d){
+ostream& operator << (ostream& os , const Distance& d){   // 该函数不属于Distance类
     os << d.getFeet();
 }
 
@@ -542,5 +542,333 @@ int main()
     cout << (*i).getFeet() << endl;
 }
 
+```
+
+## 10 指向类成员指针
+
+必须有类名  类名::
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class A{
+public:
+    typedef int int_a;
+    int_a a;
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+
+};
+int main()
+{
+    A aa = A(2);
+    int A::*point_a = &A::a;
+    cout << aa.*point_a << endl;
+
+    void (A::*point_func)() = &A::func;
+    (aa.*point_func)(); 
+}
+```
+
+## 11 友元
+
+友元类的**所有成员函数**都是另一个类的**友元函数**，都可以访问另一个类中的隐藏信息（包括私有成员和保护成员）。
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class A{
+public:
+    typedef int int_a;
+    friend class B;          // 声明友元类
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+
+private:
+    int_a a;
+};
+
+class B: public A{
+public:
+    void func(const A& aa) const {
+        cout << aa.a << endl;         // 可以访问A中的private成员
+    }
+};
+
+
+int main()
+{
+    A aa = A(2);
+    B bb;
+    bb.func(aa);
+}
+```
+
+### 11.1 注意事项
+
+- 友元声明**不受**其所在类的声明区域**public private 和protected** 的影响。
+- 友元关系**不能被继承**。（因为友元不属于类内成员）
+- 友元关系**不具有传递性**。若类B 是类A 的友元，类C 是B 的友元，类C 不一定是类A 的友元，同样要看类中是否有相应的声明
+
+### 11.2 派生类友元函数
+
+由于友元函数并非类成员，因引不能被继承，在某种需求下，可能希望**派生类的友元函数能够使用基类中的友元函数**。为此可以通过**强制类型转换**，将派生类的指针或是引用强转为其类的引用或是指针，然后使用转换后的引用或是指针来调用基类中的友元函数。
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class A{
+public:
+    typedef int int_a;
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+    friend ostream& operator << (ostream& , const A& );
+    int_a geta() const {
+        return a;
+    }
+private:
+    int_a a;
+};
+
+ostream& operator << (ostream& output , const A& aa) {
+    output << aa.a << endl;
+}
+
+class B: public A{
+public:
+    friend ostream& operator << (ostream& , const B&);
+    B(int aa , int bb) : A(aa) , b(bb) {};
+private:
+    int b;
+};
+
+ostream& operator << (ostream& output , const B& bb){
+    output << (A)bb;       // 强转后调用 ostream& operator << (ostream& output , const A& aa)
+    output << bb.b << endl;
+}
+
+
+int main()
+{
+    A aa = A(2);
+    B bb = B(2 , 20);
+    cout << bb;
+}
+
+```
+
+## 12 类型转换
+
+### 12.1 转换构造函数
+
+格式：
+
+```
+class 目标类{
+	目标类(const 源类& 源类对象引用){
+		根据需求完成从源类型到目标类型的转换
+	}
+}
+```
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class B;
+
+class A{
+public:
+    typedef int int_a;
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+    friend ostream& operator << (ostream& , const A& );
+    int_a geta() const {
+        return a;
+    }
+    friend class B;
+private:
+    int_a a;
+};
+
+
+ostream& operator << (ostream& output , const A& aa) {
+    output << aa.a << endl;
+}
+
+class B {
+public:
+    friend ostream& operator << (ostream& , const B&);
+    B(int aa , int bb) : a(aa) , b(bb) {};
+    B(const A& aa){
+        this->a = aa.a;
+        this->b = 10;
+    }
+private:
+    int a;
+    int b;
+};
+
+ostream& operator << (ostream& output , const B& bb){
+    output << bb.a << ' ' << bb.b << endl;
+}
+
+
+int main()
+{
+    A aa = A(2);
+    B bb = aa;
+    cout << bb << endl;
+    cout <<B(aa);
+}
+```
+
+#### 12.1.1 explicit
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class B;
+
+class A{
+public:
+    typedef int int_a;
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+    friend ostream& operator << (ostream& , const A& );
+    int_a geta() const {
+        return a;
+    }
+    friend class B;
+private:
+    int_a a;
+};
+
+
+ostream& operator << (ostream& output , const A& aa) {
+    output << aa.a << endl;
+}
+
+class B {
+public:
+    friend ostream& operator << (ostream& , const B&);
+    B(int aa , int bb) : a(aa) , b(bb) {};
+    explicit B(const A& aa){
+        this->a = aa.a;
+        this->b = 10;
+    }
+private:
+    int a;
+    int b;
+};
+
+
+
+ostream& operator << (ostream& output , const B& bb){
+    output << bb.a << ' ' << bb.b << endl;
+}
+
+
+int main()
+{
+    A aa = A(2);
+    B bb = aa;         // error: 不允许编译器自动类型转换
+    B bb = B(aa);       // ok: 只允许显式的类型转换
+    cout << bb << endl;
+    cout <<B(aa);
+}
+
+```
+
+### 12.2 用类型转换操作符函数进行转换
+
+格式：
+
+```
+class 源类{
+operator 转化目标类(void){
+	根据需求完成从源类型到目标类型的转换
+}
+}
+```
+
+```
+#include <iostream>
+#include <string>
+using namespace std;
+
+class B;
+
+class A{
+public:
+    typedef int int_a;
+    void func(){
+        cout << "A::func()" << endl;
+    }
+    A(const int &aa) : a(aa) {}
+    A() = default;
+    operator B();
+    friend ostream& operator << (ostream& , const A& );
+    int_a geta() const {
+        return a;
+    }
+private:
+    int_a a;
+};
+
+
+ostream& operator << (ostream& output , const A& aa) {
+    output << aa.a << endl;
+}
+
+class B {
+public:
+    friend ostream& operator << (ostream& , const B&);
+    B(int aa , int bb) : a(aa) , b(bb) {};
+private:
+    int a;
+    int b;
+};
+
+ostream& operator << (ostream& output , const B& bb){
+    output << bb.a << ' ' << bb.b << endl;
+}
+
+A::operator B(){
+    return B(10 , 20);
+}
+
+
+int main()
+{
+    A aa = A(2);
+    B bb = aa;      // 类型转换  A 转成了 B 
+    cout << bb;
+    cout <<B(aa);   // 类型转换
+}
 ```
 
