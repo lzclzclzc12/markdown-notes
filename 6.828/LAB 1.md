@@ -217,5 +217,132 @@
 
 - 之所以以上这些都是物理地址的原因是此时还未开启分页，所以没有虚拟地址
 
+### Kernel
 
+#### entry.S
 
+- kernel的可执行文件为`obj/kern/kernel`，其链接脚本文件为`kern/kernel.ld`，有关链接脚本文件的写法：[链接器与链接脚本](https://zhuanlan.zhihu.com/p/521964756).
+
+- 从`kern/kernel.ld`中可以看出，链接器将内核文件链接到0xF0100000上，这是内核文件的VMA，也是内核文件运行时的虚拟地址；而内核文件的LMA为0x100000，也就是内核文件在内存中的物理地址
+
+  ```
+  /* Link the kernel at this address: "." means the current address */
+  . = 0xF0100000;
+  
+  /* AT(...) gives the load address of this section, which tells
+     the boot loader where to load the kernel in physical memory */
+  .text : AT(0x100000) {
+     *(.text .stub .text.* .gnu.linkonce.t.*)
+  }
+  ```
+
+- 也就是说，内核在运行时，其代码和变量的地址都是已经虚拟地址了。
+
+- 内核代码的入口是`kern/entry.S`中的entry，在操作系统未开启分页时，访问内存都是使用物理地址。
+
+- 我们定义了一个页目录entry_pgdir，**这个变量使用的是虚拟地址**，我们需要将其变为物理地址后传给CR3寄存器。
+
+  ```
+  # Load the physical address of entry_pgdir into cr3.  entry_pgdir
+  # is defined in entrypgdir.c.
+  movl   $(RELOC(entry_pgdir)), %eax
+  movl   %eax, %cr3
+  # Turn on paging.
+  movl   %cr0, %eax
+  orl    $(CR0_PE|CR0_PG|CR0_WP), %eax
+  movl   %eax, %cr0
+  ```
+
+- entry_pgdir定义在`kern/entrypgdir.c`中，其中一个页目录项代表的内存为4MB（1K * 4KB），所以说`entry_pgdir[0]`就代表VA的[0, 4MB)，`entry_pgdir[KERNBASE>>PDXSHIFT]`则代表虚拟地址从0xF0100000开始的4MB，从代码定义中我们可以看出，这两处虚拟地址的页目录项所指向的页表的页的物理地址都是相同的，即都是`(uintptr_t)entry_pgtable - KERNBASE`，也就实现了这两处4MB的虚拟地址都映射到了PA的[0, 4MB)。
+
+  ```
+  pde_t entry_pgdir[NPDENTRIES] = {
+     // Map VA's [0, 4MB) to PA's [0, 4MB)
+     [0]
+        = ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P,
+     // Map VA's [KERNBASE, KERNBASE+4MB) to PA's [0, 4MB)
+     [KERNBASE>>PDXSHIFT]
+        = ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P + PTE_W
+  };
+  ```
+
+- `entry_pgtable`为实现的**唯一一个页表**，其所指向的物理地址为[0, 4MB)
+
+  ```
+  __attribute__((__aligned__(PGSIZE)))
+  pte_t entry_pgtable[NPTENTRIES] = {
+     0x000000 | PTE_P | PTE_W,
+     0x001000 | PTE_P | PTE_W,
+     0x002000 | PTE_P | PTE_W,
+     0x003000 | PTE_P | PTE_W,
+     ....
+  ```
+
+- 我们实现了分页之后，我们就可以通过访问虚拟地址来访问内存了，比如：
+
+  ```
+  mov $relocated, %eax
+  f0100028:  b8 2f 00 10 f0         mov    $0xf010002f,%eax
+  jmp	*%eax
+  f010002d:	ff e0                	jmp    *%eax
+  ```
+
+  这里在`jmp *%eax`之后，eip就变成了0xf010002f，也就是虚拟高地址了，在比如：
+
+  ```
+  # Now paging is enabled, but we're still running at a low EIP
+  # (why is this okay?).  Jump up above KERNBASE before entering
+  # C code.
+  mov    $relocated, %eax
+  f0100028:  b8 2f 00 10 f0         mov    $0xf010002f,%eax
+  ```
+
+  问题：Now paging is enabled, but we're still running at a low EIP (why is this okay?).
+
+  答：注意执行到这条指令时，eip = 0x100028，这是在虚拟地址[0, 4MB)之内，所以此时还是可以运行的
+
+- 最后我们设置ebp = 0（不清楚为什么），在数据段开辟KSTKSIZE（8个页）大小的内存作为栈的空间，将esp初始化，进入初始化c语言代码.
+
+  ```
+  # Clear the frame pointer register (EBP)
+  # so that once we get into debugging C code,
+  # stack backtraces will be terminated properly.
+  movl   $0x0,%ebp        # nuke frame pointer
+  
+  # Set the stack pointer
+  movl   $(bootstacktop),%esp
+  
+  .data
+  ###################################################################
+  # boot stack
+  ###################################################################
+  	.p2align	PGSHIFT		# force page alignment
+  	.globl		bootstack
+  bootstack:
+  	.space		KSTKSIZE
+  	.globl		bootstacktop   
+  bootstacktop:
+  ```
+
+#### init.c/i386_init
+
+- 这个函数主要是做一些初始化操作。
+
+- edata[]和end[]分别表示.bss段的开始和结束，.bss段存放的是未初始化的变量，我们需要将这些变量设置为0
+
+  ```
+  extern char edata[], end[];
+  
+  // Before doing anything else, complete the ELF loading process.
+  // Clear the uninitialized global data (BSS) section of our program.
+  // This ensures that all static/global variables start out zero.
+  memset(edata, 0, end - edata);
+  ```
+
+##### cprintf函数
+
+- 这个函数是参数不定函数，
+
+  ```
+  cprintf(const char *fmt, ...)
+  ```
