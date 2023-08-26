@@ -73,7 +73,7 @@
 - When the BIOS runs, it sets up an **interrupt descriptor table** and **initializes various devices** such as the VGA display.
 - After **initializing the PCI bus** and all the important devices the BIOS knows about, it **searches for a bootable device** such as a floppy, hard drive, or CD-ROM. Eventually, when it finds a bootable disk, the BIOS **reads the *boot loader* from the disk and transfers control to it**.
 
-## The Boot Loader
+### The Boot Loader
 
 - 在JOS中，BIOS从磁盘的第一个扇区读取出boot loader代码，放到内存的**[0x7c00 , 0x7dff]**处，最后使用jmp指令设置cs:ip为0000:7c00，该地址为boot loader的入口地址，至此，处理器的控制权转向了boot loader.
 - 主要是将操作系统从实模式转化为保护模式，然后将内核写入内存，并且跳转到内核的入口地址
@@ -341,8 +341,159 @@
 
 ##### cprintf函数
 
-- 这个函数是参数不定函数，
+- 这个函数是参数不定函数，第一个参数是一个字符串，里面有%d , %c等等
 
   ```
   cprintf(const char *fmt, ...)
   ```
+
+- 关于c语言可变参数函数的使用，见[C语言之va_list](https://blog.csdn.net/qq_44632658/article/details/126877443).可以用va_list接收各种不同类型参数。
+
+- cprintf函数调用vprintf函数，vprint函数再调用vprintfmt函数
+
+- vprintfmt函数通过逐个字符分析字符串fmt，如果是普通字符，那么直接打印，如果是带有%的字符，那么根据类型来输出，比如我们想输出一个base进制的数字，其十进制为num，输出宽度为width（不是输出数字的位数，如果数字的位数小于width，那么需要用padc来向前填充）：
+
+  ```
+  static void
+  printnum(void (*putch)(int, void*), void *putdat,
+      unsigned long long num, unsigned base, int width, int padc)
+  {
+     // first recursively print all preceding (more significant) digits
+     if (num >= base) {
+        printnum(putch, putdat, num / base, base, width - 1, padc);
+     } else {
+        // print any needed pad characters before first digit
+        while (--width > 0)
+           putch(padc, putdat);
+     }
+  
+     // then print this (the least significant) digit
+     putch("0123456789abcdef"[num % base], putdat);
+  }
+  ```
+
+- 打印函数为putch，它接收一个字符，然后将其输出在各个设备上
+
+  ```
+  static void
+  putch(int ch, int *cnt)
+  {
+  	cputchar(ch);
+  	*cnt++;
+  }
+  
+  void
+  cputchar(int c)
+  {
+     cons_putc(c);
+  }
+  
+  // output a character to the console
+  static void
+  cons_putc(int c)
+  {
+  	serial_putc(c);
+  	lpt_putc(c);
+  	cga_putc(c);
+  }
+  ```
+
+  其中cga_putc函数是将一个字符输出在屏幕上，
+
+  ```
+  static void
+  cga_putc(int c)
+  {
+  ...
+  // What is the purpose of this?
+  	if (crt_pos >= CRT_SIZE) {
+  		int i;
+  		// 如果当前缓冲区的内容超过了一个屏幕所能显示的内容，那么先将内容上移一行
+  		memmove(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
+  		// 清除最后一行的内容
+  		for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
+  			crt_buf[i] = 0x0700 | ' ';
+  		// 光标上移一行	
+  		crt_pos -= CRT_COLS;
+  	}
+  ...	
+  ```
+
+  其中，crt_buf为CGA设备的缓冲区（物理地址为0xB8000），初始化代码为：
+
+  ```
+  #define CGA_BUF		0xB8000
+  
+  cp = (uint16_t*) (KERNBASE + CGA_BUF);
+  ...
+  crt_buf = (uint16_t*) cp;
+  ```
+
+### stack
+
+- c语言在函数调用时的栈的变化：
+
+  ![img](https://images2015.cnblogs.com/blog/809277/201602/809277-20160229215738095-1864590140.jpg)
+
+- 在调用memset函数时，首先将edata放入edx，将end放入eax，然后end - edata放入eax，然后首先将end - edata参数入栈，依次将0和edata入栈
+
+  ```
+  memset(edata, 0, end - edata);
+  f01000c5:  c7 c2 60 40 11 f0      mov    $0xf0114060,%edx
+  f01000cb:  c7 c0 a0 46 11 f0      mov    $0xf01146a0,%eax
+  f01000d1:  29 d0                  sub    %edx,%eax
+  f01000d3:  50                     push   %eax
+  f01000d4:  6a 00                  push   $0x0
+  f01000d6:  52                     push   %edx
+  f01000d7:  e8 b9 16 00 00         call   f0101795 <memset>
+  ...
+  
+  void *
+  memset(void *v, int c, size_t n)
+  {
+  f0101795:	f3 0f 1e fb          	endbr32 
+  f0101799:	55                   	push   %ebp
+  f010179a:	89 e5                	mov    %esp,%ebp
+  ...
+  ```
+
+  call指令会将返回地址入栈，并且改变eip。call指令之后，将之前栈帧的ebp入栈，再将设置新的栈帧的开始。
+
+- 所以函数的参数是**从右向左入栈**
+
+#### debuginfo_eip
+
+- 实验最后让我们实现backtrace，也就是通过返回地址eip，从stab（符号表）中找到eip所在的文件名、在文件中的行号、在文件中的函数名等信息
+
+- 首先了解一下stab表项的结构，每个表项共有5个值，我们可以通过`objdump -G obj/kern/kernel`来查看内核的符号表，我们可以看到内核的符号表最后有一个string，这个信息存储在stabstr段中，存有文件名、函数名、变量名
+
+  ```
+  // Entries in the STABS table are formatted as follows.
+  struct Stab {
+     uint32_t n_strx;   // index into string table of name
+     uint8_t n_type;         // type of symbol
+     uint8_t n_other;        // misc info (usually empty)
+     uint16_t n_desc;        // description field
+     uintptr_t n_value; // value of symbol
+  };
+  
+  /*
+  stabstr 是对应的字符串数组
+  n_strx 是字符串索引，这里是对于文件名来说的, 函数名来说, 是存储字符串数组的下标(偏移)
+  n_type 是符号类型，FUN指函数名，SLINE指在text段中的行号，SO指的是源文件
+  n_othr 目前没被使用，其值固定为0
+  n_desc 表示在文件中的行号
+  n_value 表示地址。特别要注意的是，这里只有FUN类型的符号的地址是绝对地址，SLINE符号的地址是偏移量，
+  其实际地址为函数入口地址加上偏移量。比如第3行的含义是地址f01000b8(=0xf01000a6+0x00000012)对应文件第34行。
+  */
+  ```
+
+- `debuginfo_eip`函数调用`stab_binsearch`函数来对于各个符号类型的二分查找，这个函数是查找符号表stabs中在[region_left , region_left]区域内离addr最近的类型为type的符号的地址，*region_left points to the matching stab that contains 'addr', and *region_right points just before the next stab.
+
+  ```
+  static void
+  stab_binsearch(const struct Stab *stabs, int *region_left, int *region_right,
+            int type, uintptr_t addr)
+  ```
+
+- 由于在大部分符号表中，符号都是按顺序排列的，比如文件-->函数-->函数代码-->下一个文件的顺序，所以在`debuginfo_eip`函数中，我们先查找文件符号，然后查找函数符号，最后查找eip所在的行
