@@ -13,6 +13,33 @@
 - IOAPIC发送的中断消息包含两个关键信息：中断要发到哪个CPU（APIC ID），中断向量是多少（VECTOR）。
 - 每个CPU都有一个LAPIC单元，LAPIC中提供了本CPU的ID
 - LAPIC存在于物理内存的0xFEE00000，并且存在于MMIO区域，JOS将MMIO区域映射到`MMIOBASE`
+- MP Configuration Table提供了多CPU的很多信息，比如CPU个数、LAPIC的物理地址等。在JOS代码中，`struct mp`为MP Floating Pointer，保存有MP Configuration Table的首地址，MP Configuration Table包含了MP Configuration Table Header（JOS中为`struct mpconf`）和多个各种类型的entry，其中类型为processor table entry是我们实验所用到的`struct mpproc`，每个CPU分配一个processor table entry.
+- 在`mp_init()`中通过对于MP Configuration Table的查找以及里面信息的查找，我们初始化了CPU ID，确定了BSP，知道了LAPIC的物理地址
+- `lapic_init()`对于LAPIC的LVT表(Local Vector Table)进行了初始化，一个 CPU 给其他 CPU 发送中断（IPI）的时候, 就在自己的 ICR寄存器中, 放中断向量和目标LAPIC ID, 然后通过总线发送到对应 LAPIC，LAPIC 根据自己的LVT(Local Vector Table) 来对不同的中断进行处理. 来自：[操作系统习笔记(3) -- XV6 的中断和系统调用](https://zhuanlan.zhihu.com/p/113365730)
+- BSP调用`lapic_startap(uint8_t apicid, uint32_t addr)`函数来启动每一个AP
+- **问题：**每个CPU都有自己的LAPIC，所以每个CPU启动时都要调用函数`lapic_init()`，进行地址映射`lapic = mmio_map_region(lapicaddr, 4096);`，其中`lapicaddr`是物理地址，但是好像每个CPU的`lapicaddr`都一样，也就是不同的虚拟地址映射到了相同的物理地址？
+
+​		答：**似乎是这样的**，每个CPU的lapic虽然不同，但是指向了相同的物理地址`lapicaddr`，如下面的代码，当BSP启动每个AP时，往ICR寄存器（共64位）的前32位写入目的CPU ID，后32位写入IPI信息，也就是**LAPIC的寄存器是公共的**，想要传递信息，就写入目的CPU ID来传递。
+
+```
+// 发送INIT中断以重置AP
+lapicw(ICRHI, apicid<<24);             //将目标CPU的ID写入ICR寄存器的目的地址域中
+lapicw(ICRLO, INIT | LEVEL | ASSERT);  //在ASSERT的情况下将INIT中断写入ICR寄存器
+microdelay(200);                       //等待200ms
+lapicw(ICRLO, INIT | LEVEL);           //在非ASSERT的情况下将INIT中断写入ICR寄存器
+microdelay(100); // 等待100ms (INTEL官方手册规定的是10ms,但是由于Bochs运行较慢，此处改为100ms)
+
+//INTEL官方规定发送两次startup IPI中断
+for(i = 0; i < 2; i++){
+    lapicw(ICRHI, apicid<<24);          //将目标CPU的ID写入ICR寄存器的目的地址域中
+    lapicw(ICRLO, STARTUP | (addr>>12));//将SIPI中断写入ICR寄存器的传送模式域中，将启动代码写入向量域中
+    microdelay(200);                    //等待200ms
+}
+```
+
+​		中断命令寄存器（ICR）是一个 64 位本地 APIC寄存器，允许运行在处理器上的软件指定和发送处理器间中断（IPI）给系统中的其它处理器。发送IPI时，必须设置ICR 以指明将要发送的 IPI消息的类型和目的处理器或处理器组。一般情况下，ICR寄存器的物理地址为0xFEE00300。**来自：**[Xv6学习小记（二）——多核启动](https://blog.csdn.net/coding01/article/details/83057093)
+
+- 每个AP的启动代码都在`mpentry.S`中
 
 ### Application Processor Bootstrap
 
@@ -21,9 +48,38 @@
 - The MP configuration table is filled in by the BIOS after it executes a CPU identification procedure on each of the processors in the system.
 - kern/init.c中的boot_aps()函数负责启动APs，在boot/boot.S启动操作系统时，将BSP从实模式变为保护模式。APs一开始也运行在实模式下，然后APs的Boot Loader **kern/mpentry.S**将其变为保护模式，boot/boot.S的入口地址是由BIOS设置的，同样，boot_aps()需要将kern/mpentry.S的入口地址放到一个实模式可以检测到的地址，在JOS中是0x7000(MPENTRY_PADDR)物理地址
 - 在入口地址放入内存后boot_aps()开始向LAPIC发送STARTUP IPIs以及MPENTRY_PADDR
-- **kern/mpentry.S**将APs从实模式变为保护模式，开启分页，设置AP的栈，最后跳转到**kern/init.c的mp_main()函数**中
+- **kern/mpentry.S**将APs从实模式变为保护模式，开启分页，设置AP的**栈**，每个CPU分配一个独立的栈，最后跳转到**kern/init.c的mp_main()函数**中
+- **Question**：Compare `kern/mpentry.S` side by side with `boot/boot.S`. Bearing in mind that `kern/mpentry.S` is compiled and linked to run above `KERNBASE` just like everything else in the kernel, what is the purpose of macro `MPBOOTPHYS`? Why is it necessary in `kern/mpentry.S` but not in `boot/boot.S`? In other words, what could go wrong if it were omitted in `kern/mpentry.S`?
 
+​		答：在boot.S中，我们访问地址不需要地址转换，是因为boot的VMA和LMA是相同的，在没有开启分页时，我们访问到的就是物理地址；而kern/mpentry.S是编译到内核里的，也就是其VMA与LMA不同，而刚开始AP运行在实模式下，未开启分页，不进行地址转换的话，得不到物理地址，所以需要`MPBOOTPHYS`来转换成物理地址。当进入保护模式开启分页后，这些变量都可以通过分页机制来进行访问，所以分页后就不需要`MPBOOTPHYS`了
 
+- 在`kern/mpentry.S`的最后进入了`init.c/mp_main()`函数。进入`mp_main()`后，将该CPU的内核的页目录换为`kern_pgdir`，并且初始化GDTR和IDTR，所有CPU共享一个内核页目录、GDT和IDT。每个CPU都有单独的TSS，最后通知BSP该CPU启动完成，可以执行进程了。
+
+  每个CPU的TSS不同，那么选择子也不同，我们需要在公共GDT表中按照选择子写入各自的TSS
+
+  ```
+  void
+  trap_init_percpu(void)
+  {
+      int i = cpunum();
+  
+      thiscpu->cpu_ts.ts_esp0 = KSTACKTOP - i * (KSTKSIZE + KSTKGAP);
+      thiscpu->cpu_ts.ts_ss0 = GD_KD;
+      thiscpu->cpu_ts.ts_iomb = sizeof(struct Taskstate);
+  
+     // Initialize the TSS slot of the gdt.
+     gdt[(GD_TSS0 >> 3) + i] = SEG16(STS_T32A, (uint32_t) (&thiscpu->cpu_ts),
+                 sizeof(struct Taskstate) - 1, 0);
+     gdt[(GD_TSS0 >> 3) + i].sd_s = 0;
+  
+     // Load the TSS selector (like other segment selectors, the
+     // bottom three bits are special; we leave them 0)
+     ltr(GD_TSS0 + (i << 3));
+  
+     // Load the IDT
+     lidt(&idt_pd);
+  }
+  ```
 
 ### 一些疑惑
 
@@ -130,7 +186,6 @@
 
 ### 疑惑
 
-- 每个CPU都有自己的LAPIC，所以每个CPU启动时都要调用函数`lapic_init()`，进行地址映射`lapic = mmio_map_region(lapicaddr, 4096);`，其中`lapicaddr`是物理地址，但是好像每个CPU的`lapicaddr`都一样，也就是不同的虚拟地址映射到了相同的物理地址
 - `lapic_init()`和`lapic_startap(c->cpu_id, PADDR(code));`内部没有深究
 - 为什么`&addr`直接指向了用户的栈底？![1692079599215](https://cdn.jsdelivr.net/gh/lzclzclzc12/BlogImage@main/img/202308151406148.png)
 - 创建子环境时，子环境和父环境的esp相同，为什么？在一开始实现的fork函数dumbfork中，我们将父环境的内存块复制了一份，包括栈，所以虽然子环境和父环境的esp相同，但是这是**虚拟地址相同**，子环境和父环境的相同虚拟地址指向了不同的物理地址。在实现了COW的fork中，用户栈页当成了共享区域，**猜测**（之后测试一下）如果父环境先修改用户栈时会触发缺页处理函数，给父环境重新分配一个用户栈
