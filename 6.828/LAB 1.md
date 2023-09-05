@@ -164,7 +164,7 @@
 
 - [计算机原理系列之二 -------- 详解ELF文件](https://mp.weixin.qq.com/s/RRx5KGvoiuKIHYeiEw5TKw)，这篇文章介绍了ELF文件的结构和数据结构
 
-- 首先，我们从磁盘的第一个扇区开始读取一个页，第一个页存放的是ELF Header
+- 首先，我们从磁盘的第二个扇区开始读取一个页，第一个页存放的是ELF Header、program Header等，不包含段的内容
 
   ```
   // read 1st page off disk，0表示内核文件的偏移
