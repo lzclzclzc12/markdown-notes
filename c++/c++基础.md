@@ -67,19 +67,29 @@ public:
 
 class Rectangle : public Shape{
 public:
-    Rectangle(int a , int b) : Shape(a , b) {}
+    Rectangle(int a , int b , int _r1 , int _r2) : Shape(a , b) , r1(_r1) , r2(_r2) {}
     virtual int area() const {
         cout << "Rectangle::area" << endl;
+        cout << r1 << ' ' << r2 << endl;
         return w * h;
     }
+private:
+    int r1;
+    int r2;
 };
 
 int main()
 {
-    Shape* s = new Rectangle(3 , 4);
+    // 这里可以理解成这块空间是Rectangle类的空间的模样，但是我们用Shape *指针指向了这块空间
+    Shape* s = new Rectangle(3 , 4 , 1 , 2);
     cout << s->area() << endl;         // 输出：Rectangle::area
+    cout << *((int *)((char *)s + 8)) << ' ' << *((int *)((char *)s + 12)) << ' ' << *((int *)((char *)s + 16)) << ' ' << *((int *)((char *)s + 20)) << endl; // 输出：3 4 1 2
+    cout << sizeof(*s) << endl;
+    //cout << sizeof(Rectangle) << endl;
+    //cout << sizeof(Shape) << endl;
     delete s;
 }
+
 ```
 
 ### 1.3 多态图例
@@ -93,6 +103,47 @@ int main()
 如上图所示，myDoc在调用OnFIleOpen()时，会传入this指针；myDoc调用基类的成员函数OnFIleOpen，但是会调用myDoc的虚函数
 
 **子类调用父类的成员函数时，会传入子类的this指针**。
+
+### 1.4 多继承的虚表
+
+- 如果是单继承，那么子类**复制**父类的虚表，所以虚指针不同。如果子类重写了虚函数，那么虚表中虚函数指针也不同。如果是子类新定义的虚函数，那么这个虚函数的地址跟在虚表后边
+
+- 如果是多继承呢？
+
+  ```
+  class Base1 {
+  public:
+  	virtual void func1() { cout << "Base1::func1" << endl; }
+  	virtual void func2() { cout << "Base1::func2" << endl; }
+  private:
+  	int b1;
+  };
+  class Base2 {
+  public:
+  	virtual void func1() { cout << "Base2::func1" << endl; }
+  	virtual void func2() { cout << "Base2::func2" << endl; }
+  private:
+  	int b2;
+  };
+  class Derive : public Base1, public Base2 {
+  public:
+  	virtual void func1() { cout << "Derive::func1" << endl; }
+  	virtual void func3() { cout << "Derive::func3" << endl; }
+  private:
+  	int d1;
+  };
+  
+  int main()
+  {
+  	cout << sizeof(Derive) << endl;  // 32
+  	return 0;
+  
+  }
+  ```
+
+  由于是多继承，那么Derive先继承Base1中的虚表和int，那么就是8+8（对齐），然后继承Base2中的虚表和int，8+8，自身的int可以放在对齐的内存中，所以最后为32。
+
+  **多继承中，子类自身的虚函数放在第一个虚表的最后**
 
 ## 2 (*p)[]
 
@@ -870,5 +921,117 @@ int main()
     cout << bb;
     cout <<B(aa);   // 类型转换
 }
+```
+
+## 13 向上转型
+
+```
+#include <iostream>
+
+using namespace std;
+
+class Base {
+public:
+    int a;
+    Base() = default;
+    Base(int _a) : a(_a) {}
+    Base(const Base &b) : a(b.a) {
+        cout << "Base(const Base &b)  " << a << endl;
+    }
+    Base& operator = (const Base &b) {
+        this->a = b.a;
+        cout << "operator = " << a << endl;
+        return *this;
+    }
+};
+
+class Child1: public Base {
+public:
+    Child1(int _a) {
+        a = _a;
+    }
+    Child1(const Child1 &c) {
+        a = c.a;
+        cout << "Child1(const Child1 &c)" << a << endl;
+    }
+};
+
+int main()
+{
+    Base b1(1);
+    Child1 c1(20);
+    Base b2;
+    b2 = c1;
+    Child1 c2(c1);
+}
+```
+
+## 14 仿函数
+
+```
+#include <iostream>
+
+using namespace std;
+
+class Fun {
+public:
+    int operator()(int a) {
+        return a;
+    }
+};
+
+template<class T>
+struct Fun1 {
+    T operator()(T a) {
+        return a;
+    }
+};
+
+int main()
+{
+    Fun f;
+    cout << f(1) << endl;
+    Fun1<int> f1;
+    cout << f1(1) << endl;
+    // 必须是Fun1<int>()(1)    首先Fun1<int>()创建出一个临时变量，然后再调用仿函数
+    cout << Fun1<int>()(1) << endl;
+}
+```
+
+## 15 数量不定的模板参数
+
+```
+#include <iostream>
+
+using namespace std;
+
+// 需要有出口函数
+void print() {
+
+}
+
+template<typename T , typename... T1>
+void print(const T &a , const T1&... args) {
+    cout << a << endl;
+    // 这里一定记得...
+    print(args...);
+}
+
+int main()
+{
+    print(1 , 2 , 'a' , "ssfsf");
+}
+
+```
+
+### 16 const char \*p，char const\*p和char\* const p的区别
+
+```
+const char *p;//char *p是一个指针，指向char类型的，被const修饰，表示指向的内容是无法改变的
+              //但是，p可以改变
+ 
+char const *p;//由于没有const *的指针类型，所以const修饰char *p，和const char *p的效果一样
+ 
+char* const p;//const直接修饰p，表示p无法修改，但是指针指向的内容可以修改
 ```
 
